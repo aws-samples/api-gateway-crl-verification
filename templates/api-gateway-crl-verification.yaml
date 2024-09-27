@@ -1,0 +1,375 @@
+
+AWSTemplateFormatVersion: 2010-09-09
+Resources:
+  s3APIGWTrustStore:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub '${AWS::AccountId}-${AWS::StackName}-truststore'
+      PublicAccessBlockConfiguration :
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Function: !GetAtt 
+              - s3PreProcessorLambdaFunction
+              - Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .crl
+    DependsOn:
+      - s3PreProcessorLambdaInvokePermissions
+
+  s3PreProcessorLambdaIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub '${AWS::AccountId}-${AWS::StackName}-s3PreProcessor-lambda_role'
+      ManagedPolicyArns:
+        - !Ref s3PreProcessorLambdaIAMPolicy
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+              - 'sts:TagSession'
+    DependsOn:
+      - s3PreProcessorLambdaIAMPolicy
+
+  s3PreProcessorLambdaIAMPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      ManagedPolicyName: !Sub '${AWS::AccountId}-${AWS::StackName}-s3PreProcessor-lambda_role_policy'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowS3CRLReadWriteAccess
+            Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+            Resource: !Sub 'arn:aws:s3:::${AWS::AccountId}-${AWS::StackName}-truststore/*'
+
+  apigwAuthorizerLambdaIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub '${AWS::AccountId}-${AWS::StackName}-apigwAuthorizer-lambda_role'
+      ManagedPolicyArns:
+        - !Ref apigwAuthorizerLambdaIAMPolicy
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+              - lambda.amazonaws.com
+              - apigateway.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+              - 'sts:TagSession'
+    DependsOn:
+      - apigwAuthorizerLambdaIAMPolicy
+  lambdaPython39Layer:
+    Type: 'AWS::Lambda::LayerVersion'
+    Properties:
+      CompatibleArchitectures:
+        - x86_64
+      CompatibleRuntimes:
+        - python3.9
+      Content:
+        S3Bucket: !Ref CodeRepositoryBucket
+        S3Key: !Ref CodeRepositoryCryptoUtils
+      Description: Python 3.9 crypto libraries
+      LayerName: Utility_Libraries
+
+
+
+  s3PreProcessorLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${AWS::AccountId}-${AWS::StackName}-s3PreProcessor'
+      Runtime: python3.9
+      Timeout: 120
+      MemorySize: 2048
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt 
+        - s3PreProcessorLambdaIAMRole
+        - Arn
+      Layers:
+        - !Ref lambdaPython39Layer
+      Code:
+        S3Bucket: !Ref CodeRepositoryBucket
+        S3Key: !Ref CodeRepositoryS3PreProcessor
+      Environment:
+        Variables:
+          s3Bucket: !Sub '${AWS::AccountId}-${AWS::StackName}-truststore'
+          s3Key: !Sub '/crl/please-define-crl-key-value.json'
+    DependsOn:
+      - s3PreProcessorLambdaIAMRole
+      - lambdaPython39Layer
+
+
+
+
+  s3PreProcessorLambdaInvokePermissions:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt 
+        - s3PreProcessorLambdaFunction
+        - Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:aws:s3:::${AWS::AccountId}-${AWS::StackName}-truststore'
+    DependsOn:
+      - s3PreProcessorLambdaFunction
+  apigwAuthorizerLambdaIAMPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      ManagedPolicyName: !Sub '${AWS::AccountId}-${AWS::StackName}-apigwAuthorizer-lambda_role_policy'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowS3CRLReadAccess
+            Effect: Allow
+            Action: 's3:GetObject'
+            Resource: !Sub 'arn:aws:s3:::${AWS::AccountId}-${AWS::StackName}-truststore/*'
+          - Sid: AllowFunctionInvoke
+            Effect: Allow
+            Action: 'lambda:InvokeFunction'
+            Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::AccountId}-${AWS::StackName}-apigwAuthorizer'
+
+    DependsOn:
+      - s3APIGWTrustStore
+  apigwLogsIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub '${AWS::AccountId}-${AWS::StackName}-apigwLogs-lambda_role'
+      ManagedPolicyArns:
+        - >-
+          arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+              - 'sts:TagSession'
+  apigwAccountSettings:
+    Type: 'AWS::ApiGateway::Account'
+    Properties:
+      CloudWatchRoleArn: !GetAtt 
+        - apigwLogsIAMRole
+        - Arn
+    DependsOn:
+      - apigwEndpoint
+      - apigwLogsIAMRole
+  apigwEndpoint:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name: !Sub '${AWS::AccountId}-${AWS::StackName}-apigw-endpoint'
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+  apigwMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref apigwAuthorizer
+      HttpMethod: GET
+      Integration:
+        ConnectionType: INTERNET
+        IntegrationResponses:
+          - ResponseTemplates:
+              application/json: '{"message": "OK"}'
+            StatusCode: 200
+          - ResponseTemplates:
+              application/json: '{"message": "Internal Srv Error"}'
+            StatusCode: 500
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200, "message": $input.json(''$.message'')}'
+        Type: MOCK
+        TimeoutInMillis: 29000
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Content-Type: 'True'
+            method.response.header.Content-Length: 'True'
+        - StatusCode: 500
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Content-Type: 'True'
+            method.response.header.Content-Length: 'True'
+      RestApiId: !Ref apigwEndpoint
+      ResourceId: !GetAtt 
+        - apigwEndpoint
+        - RootResourceId
+    DependsOn:
+      - apigwEndpoint
+  apigwModel:
+    Type: 'AWS::ApiGateway::Model'
+    Properties:
+      ContentType: application/json
+      RestApiId: !Ref apigwEndpoint
+      Schema: {}
+  apigwDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    Properties:
+      RestApiId: !Ref apigwEndpoint
+    DependsOn:
+      - apigwMethod
+  apigwEndpointStage:
+    Type: 'AWS::ApiGateway::Stage'
+    Properties:
+      MethodSettings:
+        - HttpMethod: '*'
+          ResourcePath: /*
+          LoggingLevel: INFO
+          DataTraceEnabled: true
+          MetricsEnabled: true
+      StageName: demo
+      Description: Demo Stage
+      TracingEnabled: true
+      RestApiId: !Ref apigwEndpoint
+      DeploymentId: !Ref apigwDeployment
+    DependsOn:
+      - apigwEndpoint
+
+  apigwAuthorizerLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${AWS::AccountId}-${AWS::StackName}-apigwAuthorizer'
+      Runtime: python3.9
+      Timeout: 120
+      MemorySize: 2048
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt 
+        - apigwAuthorizerLambdaIAMRole
+        - Arn
+      Layers:
+        - !Ref lambdaPython39Layer
+      Code:
+        S3Bucket: !Ref CodeRepositoryBucket
+        S3Key: !Ref CodeRepositoryAPIGWAuthorizer
+      Environment:
+        Variables:
+          s3Bucket: !Sub '${AWS::AccountId}-${AWS::StackName}-truststore'
+          s3Key: !Sub '/crl/please-define-crl-key-value'
+    DependsOn:
+      - apigwAuthorizerLambdaIAMRole
+      - lambdaPython39Layer
+
+
+  apigwAuthorizer:
+    Type: 'AWS::ApiGateway::Authorizer'
+    Properties:
+      AuthorizerCredentials: !GetAtt 
+        - apigwAuthorizerLambdaIAMRole
+        - Arn
+      AuthorizerResultTtlInSeconds: 0
+      AuthorizerUri: !Join 
+        - ''
+        - - 'arn:aws:apigateway:'
+          - !Ref 'AWS::Region'
+          - ':lambda:path/2015-03-31/functions/'
+          - !GetAtt 
+            - apigwAuthorizerLambdaFunction
+            - Arn
+          - /invocations
+      Type: REQUEST
+      Name: !Sub '${AWS::AccountId}-${AWS::StackName}-Authorizer'
+      RestApiId: !Ref apigwEndpoint
+    DependsOn:
+      - apigwAuthorizerLambdaFunction
+      - apigwAuthorizerLambdaIAMRole
+
+      
+Parameters:
+  Prefix:
+    Type: String
+    Default: apigwcrlsample
+    Description: >-
+      Deployment prefix that will be used as a part of various resource names.
+      Lower case alphanumeric only, '_' are not allowed
+    AllowedPattern: '^[a-z0-9]*$'
+    ConstraintDescription: >-
+      Malformed input-Parameter MyParameter must only contain lowercase letters
+      and numbers, no underscores are allowed
+  
+
+  CodeRepositoryBucket:
+    Type: String
+    Default: aws-code-samples
+
+  CodeRepositoryS3PreProcessor:
+    Type: String
+    Default: s3preprocessor.zip
+  
+  CodeRepositoryCryptoUtils:
+    Type: String
+    Default: cryptoutils-3.9.zip
+  
+  CodeRepositoryAPIGWAuthorizer:
+    Type: String
+    Default: authorizer.zip
+
+Outputs:
+  s3APIGWTrustStore:
+    Value: !GetAtt 
+      - s3APIGWTrustStore
+      - Arn
+    Description: S3 bucket for trust store public keys and the CRL file
+    Export:
+      Name: !Sub '${AWS::StackName}-s3APIGWTrustStore'
+  s3PreProcessorLambdaIAMRole:
+    Value: !GetAtt 
+      - s3PreProcessorLambdaIAMRole
+      - Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-s3PreProcessorLambdaIAMRole'
+  s3PreProcessorLambdaIAMPolicy:
+    Value: !Ref s3PreProcessorLambdaIAMPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-s3PreProcessorLambdaIAMPolicy'
+  apigwAuthorizerLambdaIAMRole:
+    Value: !GetAtt 
+      - apigwAuthorizerLambdaIAMRole
+      - Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-apigwAuthorizerLambdaIAMRole'
+  apigwAuthorizerLambdaIAMPolicy:
+    Value: !Ref apigwAuthorizerLambdaIAMPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-apigwAuthorizerLambdaIAMPolicy'
+  apigwLogsIAMRole:
+    Value: !GetAtt 
+      - apigwLogsIAMRole
+      - Arn  
+    Export:
+      Name: !Sub '${AWS::StackName}-apigwLogsIAMRole'
+  ApiGWResourceId:
+    Value: !GetAtt 
+      - apigwEndpoint
+      - RootResourceId

@@ -25,7 +25,9 @@ Contributions via pull requests are much appreciated. Before sending us a pull r
 
 1. You are working against the latest source on the *main* branch.
 2. You check existing open, and recently merged, pull requests to make sure someone else hasn't addressed the problem already.
-3. You open an issue to discuss any significant work - we would hate for your time to be wasted.
+3. You review the related blog post, [How to Implement Client Certificate Revocation List Checks at Scale with API Gateway](https://aws.amazon.com/blogs/security/how-to-implement-client-certificate-revocation-list-checks-at-scale-with-api-gateway/) by Arthur Mnev and Venkat Donavalli. Consider how your updates might impact the narrative and functionality outlined in the post.
+4. You open an issue to discuss any significant work - we would hate for your time to be wasted.
+
 
 To send us a pull request, please:
 
